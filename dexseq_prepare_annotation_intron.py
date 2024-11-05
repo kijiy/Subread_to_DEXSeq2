@@ -57,14 +57,33 @@ aggregateGenes = opts.aggregate == "yes"
 # in a GenomicArrayOfSets
 print("Step 1: Loading GTF file...", flush = True)
 exons = HTSeq.GenomicArrayOfSets( "auto", stranded=True )
+
 for f in HTSeq.GFF_Reader( gtf_file ):
    if f.type != "exon":
          continue
+   # gene_now = f.attr['gene_id'].replace( ":", "_" )
    f.attr['gene_id'] = f.attr['gene_id'].replace( ":", "_" )
    exons[f.iv] += ( f.attr['gene_id'], f.attr['transcript_id'] )
 
-   
 
+
+# Step 1.1: Store the last exon information
+last_exon_dict = dict()
+for cnt, (iv, s) in enumerate(exons.steps()):
+   full_set = set()
+   for gene_id, transcript_id in s:
+      full_set.add( gene_id )
+
+   # Store the last exon for each gene. (Keep updating along with the gtf scanning)
+   if '"ENSMUSG00000098997.1"' in full_set:
+      print(s)
+      print(iv, full_set)
+
+   for gene_now in full_set:
+      last_exon_dict[gene_now] = iv
+
+
+   
 
 # Step 2: Form sets of overlapping genes
 
@@ -73,52 +92,109 @@ for f in HTSeq.GFF_Reader( gtf_file ):
 # The keys of 'gene_sets' are the IDs of all genes, and each key refers to
 # the set that contains the gene.
 # Each gene set forms an 'aggregate gene'.
-print("Step 2: Storing overlapping gene information...", flush = True)
+print("\nStep 2: Storing overlapping gene information...", flush = True)
+current_gene_pool = set()
+intron_set = set()
 is_next_region_intron = dict()
 prev_gene_set = set()
 prev_region = ""
+flag = 0
+flag2 = 0
 
-# if aggregateGenes == True: # Regacy: aggregateGenes is always True in this code
-gene_sets = collections.defaultdict( lambda: set() )
+
+# if aggregateGenes == True: # Regacy: aggregateGenes is always True in this script
+gene_sets = dict()
+
 for cnt, (iv, s) in enumerate(exons.steps()):
-   # For each step, make a set, 'full_set' of all the gene IDs occuring
-   # in the present step, and also add all those gene IDs, whch have been
-   # seen earlier to co-occur with each of the currently present gene IDs.
+   # if cnt >= 11805:
+   #    flag += 1
+   #    print(cnt, iv)
+   
+   # Set of genes overlapping at the current location (only available for exons)
    full_set = set()
    for gene_id, transcript_id in s:
       full_set.add( gene_id )
-      full_set |= gene_sets[ gene_id ]
-      
-   # Make sure that all genes that are now in full_set get associated
-   # with full_set, i.e., get to know about their new partners
-   for gene_id in full_set:
-      assert gene_sets[ gene_id ] <= full_set
-      gene_sets[ gene_id ] = full_set
-
-   # Judge if the previous exon was followed by intron.
-   # This can be told by checking if the current and previous
-   # gene ids have overlaps.
-   if len(s) > 0: # Exon
-      if len(full_set & prev_gene_set) > 0:
-         is_next_region_intron[prev_region] = True
-      else:
-         is_next_region_intron[prev_region] = False
-      
-      # Store the prev info
-      prev_gene_set = copy.copy(full_set)
-      prev_region = copy.copy(iv)
 
    
-   if cnt == 100:
-      break
+
+   
+   # Update the current gene pool set. If the current position corresponds to the last exons,
+   # the gene should be removed from the set.
+   current_gene_pool |= full_set
+   
+   # Store the current set of genes. This can be used for introns as well because ids are taken from current_pool.
+   gene_sets[iv] = copy.copy(current_gene_pool)
+   
+   # if flag >= 1:
+   #    print(full_set, current_gene_pool)
+   #    print("")
+   
+   # if flag == 10:
+   #    exit()
+
+   # if '"ENSMUSG00000098997.1"' in full_set:
+   #    print(cnt, iv, current_gene_pool, full_set, last_exon_dict['"ENSMUSG00000098997.1"'])
+
+   # Remove gene ids if they are the last exons. By doing so, if current pool gets empty, the next non-exonic region
+   # can be treated as an intergenic region.
+   for gene_now in full_set:
+      if iv == last_exon_dict[gene_now]:
+         current_gene_pool = current_gene_pool - {gene_now}
+
+   # Store the region to an intron pool if the current region is not exon and the size of the
+   # current gene pool is more than 0 (=we are still inside at least one gene body).
+   if len(s) == 0 and len(current_gene_pool) > 0:
+      intron_set.add(iv)
+      
+
+
+   # if '"ENSMUSG00000098997.1"' in full_set:
+   #    print(cnt, iv, current_gene_pool, full_set, last_exon_dict['"ENSMUSG00000098997.1"'])
+
+
+   # if "ENSMUSG00000048747.14" in full_set:
+   #    flag2 = 1
+   
+   # if flag2 == 1:
+   #    print(cnt, iv, full_set, prev_gene_set, len(full_set & prev_gene_set) > 0)
+
+   # # if "ENSMUSG00000085710.1" in full_set:
+   # #    print(cnt, iv, full_set, prev_gene_set, len(full_set & prev_gene_set) > 0)
+
+   # if cnt == 172561:
+   #    exit()
+
+
+
+
+   # # Judge if the previous exon was followed by intron.
+   # # This can be told by checking if the current and previous
+   # # gene ids have overlaps.
+   # if len(s) > 0 and flag != 0: # Exon
+   #    if len(full_set & prev_gene_set) > 0:
+   #       is_next_region_intron[prev_region] = True
+   #    else:
+   #       is_next_region_intron[prev_region] = False
+      
+   #    # Store the prev info
+   #    prev_gene_set = copy.copy(full_set)
+   #    prev_region = copy.copy(iv)
+
+   
+      
+   # flag = 1
+
+   
+   # if cnt == 100:
+   #    break
 
 # The final exon in the entire GTF shouldn't have introns after it
-is_next_region_intron[prev_region] = False
+# is_next_region_intron[prev_region] = False
+# print(is_next_region_intron)
 
-pprint.pprint(gene_sets)
-print(is_next_region_intron)
+# pprint.pprint(gene_sets)
+# print(is_next_region_intron)
 
-exit()
 
 
 # Step 3: Go through the steps again to get the exonic sections. Each step
@@ -130,15 +206,18 @@ exit()
 
 aggregates = collections.defaultdict( lambda: list() )
 gene_id_prev = ""
+is_intron = False
 for cnt, (iv, s) in enumerate(exons.steps()):
    # Deal with non-exonic region
-   if len(s) == 0:
-      if iv in is_next_region_intron:
-         gene_id = "to be filled"
+   if len(s) == 0: # non-exonic
+      if iv in intron_set:
+         is_intron = True
       else:
+         is_intron = False
          continue
-      
-   gene_id = list(s)[0][0]
+   else: # exonic
+      is_intron = False
+      gene_id = list(s)[0][0]
 
    ## if aggregateGenes=FALSE, ignore the exons associated to more than one gene ID
    ## This option does not exist in the current implementation
@@ -155,8 +234,8 @@ for cnt, (iv, s) in enumerate(exons.steps()):
    # # Take one of the gene IDs, find the others via gene sets, and
    # # form the aggregate ID from all of them
    # else:
-   assert set( gene_id for gene_id, transcript_id in s ) <= gene_sets[ gene_id ]
-   aggregate_id = '+'.join( gene_sets[ gene_id ] )
+   # assert set( gene_id for gene_id, transcript_id in s ) <= gene_sets[ gene_id ]
+   aggregate_id = '+'.join( sorted(list(gene_sets[ iv ])) )
    
    # Make the feature and store it in 'aggregates'
    f = HTSeq.GenomicFeature( aggregate_id, "exonic_part", iv )
@@ -165,7 +244,12 @@ for cnt, (iv, s) in enumerate(exons.steps()):
    f.attr[ 'gene_id' ] = aggregate_id
    transcript_set = set( ( transcript_id for gene_id, transcript_id in s ) )
    f.attr[ 'transcripts' ] = '+'.join( transcript_set )
+   f.attr[ 'region_type' ] = "Intron" if is_intron else "Exon"
    aggregates[ aggregate_id ].append( f )
+
+   # if gene_id == "ENSMUSG00000102307.1":
+   #    print(cnt, iv, s, aggregate_id, '+'.join( transcript_set ), f.attr[ 'region_type' ])
+
 
 
 # Step 4: For each aggregate, number the exonic parts
